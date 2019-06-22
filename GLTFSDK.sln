@@ -19,7 +19,7 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Deserialize", "GLTFSDK.Samp
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Serialize", "GLTFSDK.Samples\Serialize\Serialize.vcxproj", "{DE6A7757-2DE3-4705-829B-96A77BABF0B2}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "glTF-Interpolater", "glTF-Interpolater\glTF-Interpolater.vcxproj", "{2F8613E2-90B8-45EF-B425-C297A86C4898}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "glTF-Interpolator", "glTF-Interpolator\glTF-Interpolater.vcxproj", "{2F8613E2-90B8-45EF-B425-C297A86C4898}"
 EndProject
 Global
 	GlobalSection(SharedMSBuildProjectFiles) = preSolution
