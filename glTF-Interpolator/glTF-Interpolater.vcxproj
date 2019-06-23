@@ -95,6 +95,7 @@
       <AdditionalIncludeDirectories>$(ProjectDir)\Eigen;$(ProjectDir);$(SolutionDir)GLTFSDK\Inc;$(SolutionDir)GLTFSDK;$(SolutionDir)GLTFSDK\Source;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalUsingDirectories>
       </AdditionalUsingDirectories>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -146,6 +147,7 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <AdditionalIncludeDirectories>$(ProjectDir)\Eigen;$(ProjectDir);$(SolutionDir)GLTFSDK\Inc;$(SolutionDir)GLTFSDK;$(SolutionDir)GLTFSDK\Source;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
