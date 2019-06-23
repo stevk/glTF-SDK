@@ -10,6 +10,7 @@
 #include <GLTFSDK/BufferBuilder.h>
 #include <GLTFSDK/IStreamWriter.h>
 #include <GLTFSDK/GLTF.h>
+#include <Eigen/Dense>
 #include <iostream>
 #include <fstream>
 #include <filesystem>
@@ -19,11 +20,12 @@
 
 using namespace std;
 using namespace Microsoft::glTF;
+using namespace Eigen;
 
 int main()
 {
     std::experimental::filesystem::path sourcePath = "D:/Code/glTF-SDK/glTF-Interpolator/Data";
-    std::experimental::filesystem::path filename = "buggy.gltf";//"Node_Attribute_00.gltf";
+    std::experimental::filesystem::path filename = "buggy.gltf";//"Node_Attribute_08.gltf";
     std::experimental::filesystem::path TargetFilename = "MergedMesh.gltf";
 
     // Load the glTF model
@@ -59,43 +61,109 @@ int main()
     const char* bufferId = "MergedMesh";
     bufferBuilder.AddBuffer(bufferId);
 
-    // Rebuild the model as a single mesh.
-    Mesh meshTarget;
-    for (const auto& mesh : documentSource.meshes.Elements())
+    // Apply the transforms from each node to the positions of its mesh and child nodes.
+        // The string is the node ID, while the matrix is the transformation matrix.
+    vector<pair<string, Matrix4f>> modifiedMatrices;
+    for (const auto& nodeMain : documentSource.nodes.Elements())
     {
-        for (const auto& meshPrimitiveSource : mesh.primitives)
+        Matrix4f matrix;
+        int index = 0;
+        for (auto it = nodeMain.matrix.values.begin(); it != nodeMain.matrix.values.end(); it++)
         {
-            // Indices
-            const Accessor& accessorIndices = documentSource.accessors.Get(meshPrimitiveSource.indicesAccessorId);
-            const auto dataIndices = gltfResourceReader->ReadBinaryData<uint16_t>(documentSource, accessorIndices);
-            bufferBuilder.AddBufferView(BufferViewTarget::ELEMENT_ARRAY_BUFFER);
-            string accessorIdIndices = bufferBuilder.AddAccessor(dataIndices, { accessorIndices.type, accessorIndices.componentType }).id;
-            
-            // Position
-            string accessorIdPositons;
-            if (meshPrimitiveSource.TryGetAttributeAccessorId(ACCESSOR_POSITION, accessorIdPositons))
-            {
-                const Accessor& accessorPosition = documentSource.accessors.Get(accessorIdPositons);
-                const auto dataPosition = gltfResourceReader->ReadBinaryData<float>(documentSource, accessorPosition);
-                bufferBuilder.AddBufferView(BufferViewTarget::ARRAY_BUFFER);
-                vector<float> minValues(3U, numeric_limits<float>::max());
-                vector<float> maxValues(3U, numeric_limits<float>::lowest());
-                const size_t positionCount = dataPosition.size();
-                for (size_t i = 0U, j = 0U; i < positionCount; ++i, j = (i % 3U))
-                {
-                    minValues[j] = min(dataPosition[i], minValues[j]);
-                    maxValues[j] = max(dataPosition[i], maxValues[j]);
-                }
-                accessorIdPositons = bufferBuilder.AddAccessor(dataPosition, { accessorPosition.type, accessorPosition.componentType, false, move(minValues), move(maxValues) }).id;
-            }
+            int row = index / 4;
+            int col = index % 4;
+            matrix((row), (col)) = *it;
+            index++;
+        }
 
-            // Mesh Primitive
-            MeshPrimitive meshPrimitiveTarget;
-            meshPrimitiveTarget.indicesAccessorId = accessorIdIndices;
-            meshPrimitiveTarget.attributes[ACCESSOR_POSITION] = accessorIdPositons;
-            meshTarget.primitives.push_back(move(meshPrimitiveTarget));
+        modifiedMatrices.push_back(make_pair(nodeMain.id, matrix));
+    }
+
+    // Flatten the matrix transforms, so every node's matrix also includes the transforms of its parents.
+    int index = 0;
+    for (const auto& node : documentSource.nodes.Elements())
+    {
+        for (auto it = node.children.begin(); it != node.children.end(); it++)
+        {
+            auto searchValue = *it;
+            auto childMatrix = find_if(modifiedMatrices.begin(), modifiedMatrices.end(), [&searchValue](const pair<string, Matrix4f>& obj) { return obj.first == searchValue; });
+            if (childMatrix->second.any())
+            {
+                childMatrix->second = modifiedMatrices[index].second * childMatrix->second;
+            }
+            else
+            {
+                childMatrix->second = modifiedMatrices[index].second;
+            }
+        }
+        index++;
+    }
+
+    // Rebuild the meshes as a single mesh.
+    Mesh meshTarget;
+    for (const auto& node : documentSource.nodes.Elements())
+    {
+        // Note that this means a mesh can be called more than once, if it is instanced by more than one node.
+        if (node.meshId != "")
+        {
+            auto mesh = documentSource.meshes.Get(node.meshId);
+            for (const auto& meshPrimitive : mesh.primitives)
+            {
+                // Positions
+                string accessorIdPositons;
+                if (meshPrimitive.TryGetAttributeAccessorId(ACCESSOR_POSITION, accessorIdPositons))
+                {
+                    // Load positions.
+                    const Accessor& accessorPosition = documentSource.accessors.Get(accessorIdPositons);
+                    const auto dataPosition = gltfResourceReader->ReadBinaryData<float>(documentSource, accessorPosition);
+                    vector<float> dataNewPosition;
+                    // Transform positions.
+                    for (auto it = dataPosition.begin(); it != dataPosition.end(); it++)
+                    {
+                        auto x = *it;
+                        it++;
+                        auto y = *it;
+                        it++;
+                        auto z = *it;
+                        Vector4f vec(x, y, z, 1);
+
+                        //Vector4f vec(*it, *(it + 1), *(it + 2), 1);
+                        auto &nodeId = node.id;
+                        auto matrix = find_if(modifiedMatrices.begin(), modifiedMatrices.end(), [nodeId](const pair<string, Matrix4f>& obj) { return obj.first == nodeId; })->second;
+                        vec = vec.transpose() * matrix;
+                        dataNewPosition.push_back(vec.x());
+                        dataNewPosition.push_back(vec.y());
+                        dataNewPosition.push_back(vec.z());
+                    }
+
+                    // Save positions to buffer, bufferview, and accessor
+                    bufferBuilder.AddBufferView(BufferViewTarget::ARRAY_BUFFER);
+                    vector<float> minValues(3U, numeric_limits<float>::max());
+                    vector<float> maxValues(3U, numeric_limits<float>::lowest());
+                    const size_t positionCount = dataNewPosition.size();
+                    for (size_t i = 0U, j = 0U; i < positionCount; ++i, j = (i % 3U))
+                    {
+                        minValues[j] = min(dataNewPosition[i], minValues[j]);
+                        maxValues[j] = max(dataNewPosition[i], maxValues[j]);
+                    }
+                    accessorIdPositons = bufferBuilder.AddAccessor(dataNewPosition, { accessorPosition.type, accessorPosition.componentType, false, move(minValues), move(maxValues) }).id;
+                }
+
+                // Indices
+                const Accessor& accessorIndices = documentSource.accessors.Get(meshPrimitive.indicesAccessorId);
+                const auto dataIndices = gltfResourceReader->ReadBinaryData<uint16_t>(documentSource, accessorIndices);
+                bufferBuilder.AddBufferView(BufferViewTarget::ELEMENT_ARRAY_BUFFER);
+                string accessorIdIndices = bufferBuilder.AddAccessor(dataIndices, { accessorIndices.type, accessorIndices.componentType }).id;
+
+                // Mesh Primitive
+                MeshPrimitive meshPrimitive;
+                meshPrimitive.indicesAccessorId = accessorIdIndices;
+                meshPrimitive.attributes[ACCESSOR_POSITION] = accessorIdPositons;
+                meshTarget.primitives.push_back(move(meshPrimitive));
+            }
         }
     }
+
     // Buffer
     bufferBuilder.Output(documentTarget);
 
@@ -135,9 +203,9 @@ int main()
 
     // Bake each node's (and its parent's) transforms into its mesh primitive's vertex positions.
 
-    // Remove material and Texture Coords from all primitives
+    // Remove material and Texture Coords from all primitives.
 
-    // Add each primitive to a new mesh in a new node
+    // Add each primitive to a new mesh in a new node.
 
     // Discard all textures, images, and texture samplers. (no materials)
     // Discard all skins. (Targets a node and won't work the same with a combined mesh. Loss of potential transforms?)
@@ -149,9 +217,113 @@ int main()
     // Write the model to a new file.
 }
 
-vector<float> ApplyNodeTransformsToPositions(vector<float> positionsSource, IndexedContainer<const Node>)
-{
-    vector<float> positionsTarget;
-
-    return positionsTarget;
-}
+//vector<pair<string, Matrix4f>> MergeNodeTransforms(IndexedContainer<const Node> &nodes)
+//{
+//    // Recreates the matrices in a mutable format that will be modified.
+//    // The string is the node ID, while the matrix is the transformation matrix.
+//    vector<pair<string, Matrix4f>> modifiedMatrices;
+//    for (const auto& nodeMain : nodes.Elements())
+//    {
+//        Matrix4f matrix;
+//        int index = 0;
+//        for (auto it = nodeMain.matrix.values.begin(); it != nodeMain.matrix.values.end(); it++)
+//        {
+//            int row = index / 4;
+//            int col = index % 4;
+//            matrix((row),(col)) = *it;
+//            index++;
+//        }
+//
+//        modifiedMatrices.push_back(make_pair(nodeMain.id, matrix));
+//    }
+//
+//    // Flatten the matrix transforms, so every node's matrix also includes the transforms of its parents.
+//    int index = 0;
+//    for (const auto& node : nodes.Elements())
+//    {
+//        if (!node.children.empty && !node.matrix.values.empty)
+//        {
+//            for (auto it = node.children.begin(); it != node.children.end(); it++)
+//            {
+//                auto searchValue = *it;
+//                auto childMatrix = find_if(modifiedMatrices.begin(), modifiedMatrices.end(), [&searchValue](const pair<string, Matrix4f>& obj) { return obj.first == searchValue; } );
+//                if (childMatrix->second.any())
+//                {
+//                    childMatrix->second = modifiedMatrices[index].second * childMatrix->second;
+//                }
+//                else
+//                {
+//                    childMatrix->second = modifiedMatrices[index].second;
+//                }
+//            }
+//        }
+//        index++;
+//    }
+//
+//    return modifiedMatrices;
+//}
+//
+//Mesh SavePositionsWithTransforms(Document &document, vector<pair<string, Matrix4f>> &modifiedMatrices, BufferBuilder &bufferBuilder, unique_ptr<GLTFResourceReader> &gltfResourceReader)
+//{
+//    Mesh meshFinal;
+//    for (const auto& node : document.nodes.Elements())
+//    {
+//        if (!node.meshId.empty)
+//        {
+//            // Note that this means a mesh can be called more than once, if it is instanced by more than one node.
+//            auto mesh = document.meshes.Get(node.meshId);
+//            for (const auto& meshPrimitive : mesh.primitives)
+//            {
+//                // Positions
+//                string accessorIdPositons;
+//                if (meshPrimitive.TryGetAttributeAccessorId(ACCESSOR_POSITION, accessorIdPositons))
+//                {
+//                    // Load positions.
+//                    const Accessor& accessorPosition = document.accessors.Get(accessorIdPositons);
+//                    const auto dataPosition = gltfResourceReader->ReadBinaryData<float>(document, accessorPosition);
+//                    vector<float> dataNewPosition;
+//                    // Transform positions.
+//                    for (auto it = dataPosition.begin(); it != dataPosition.end(); it + 3)
+//                    {
+//                        Vector3f vec(*it, *(it + 1), *(it + 2));
+//                        auto &nodeId = node.id;
+//                        auto matrix = &find_if(modifiedMatrices.begin(), modifiedMatrices.end(), [nodeId](const pair<string, Matrix4f>& obj) { return obj.first == nodeId; })->second;
+//                        if (matrix->any)
+//                        {
+//                            vec = vec * matrix->matrix;
+//                        }
+//                        dataNewPosition.push_back(vec.x);
+//                        dataNewPosition.push_back(vec.y);
+//                        dataNewPosition.push_back(vec.z);
+//                    }
+//
+//                    // Save positions to buffer, bufferview, and accessor
+//                    bufferBuilder.AddBufferView(BufferViewTarget::ARRAY_BUFFER);
+//                    vector<float> minValues(3U, numeric_limits<float>::max());
+//                    vector<float> maxValues(3U, numeric_limits<float>::lowest());
+//                    const size_t positionCount = dataNewPosition.size();
+//                    for (size_t i = 0U, j = 0U; i < positionCount; ++i, j = (i % 3U))
+//                    {
+//                        minValues[j] = min(dataNewPosition[i], minValues[j]);
+//                        maxValues[j] = max(dataNewPosition[i], maxValues[j]);
+//                    }
+//                    accessorIdPositons = bufferBuilder.AddAccessor(dataNewPosition, { accessorPosition.type, accessorPosition.componentType, false, move(minValues), move(maxValues) }).id;
+//                }
+//
+//                // Indices
+//                const Accessor& accessorIndices = document.accessors.Get(meshPrimitive.indicesAccessorId);
+//                const auto dataIndices = gltfResourceReader->ReadBinaryData<uint16_t>(document, accessorIndices);
+//                bufferBuilder.AddBufferView(BufferViewTarget::ELEMENT_ARRAY_BUFFER);
+//                string accessorIdIndices = bufferBuilder.AddAccessor(dataIndices, { accessorIndices.type, accessorIndices.componentType }).id;
+//
+//                // Mesh Primitive
+//                MeshPrimitive meshPrimitive;
+//                meshPrimitive.indicesAccessorId = accessorIdIndices;
+//                meshPrimitive.attributes[ACCESSOR_POSITION] = accessorIdPositons;
+//                meshFinal.primitives.push_back(move(meshPrimitive));
+//            }
+//        }
+//    }
+//
+//    return meshFinal;
+//}
