@@ -6,14 +6,8 @@
 #include <GLTFSDK/GLTFResourceWriter.h>
 #include <GLTFSDK/GLTFResourceReader.h>
 #include <GLTFSDK/BufferBuilder.h>
-#include <GLTFSDK/IStreamWriter.h>
-#include <GLTFSDK/GLTF.h>
 #include <Eigen/Dense>
 #include <iostream>
-#include <fstream>
-#include <sstream>
-#include <cassert>
-#include <cstdlib>
 
 using namespace std;
 using namespace Microsoft::glTF;
@@ -21,7 +15,8 @@ using namespace Eigen;
 
 int main()
 {
-    string sourcePath = "D:/Code/glTF-SDK/glTF-Interpolator/Data";
+    auto sourcePath = experimental::filesystem::current_path() / "Data";
+
     string filename = "buggy.gltf";//"Node_Attribute_08.gltf";
     string TargetFilename = "MergedMesh.gltf";
 
@@ -98,8 +93,16 @@ int main()
     }
     cout << "Transforms flattened!\n";
 
+    // Material
+    Material material;
+    material.emissiveFactor = Color3(0.0f, 0.0f, 0.0f);
+    material.metallicRoughness.baseColorFactor = Color4(1.0f, 1.0f, 1.0f, 1.0f);
+    material.metallicRoughness.metallicFactor = 0.0f;
+    auto materialId = documentTarget.materials.Append(move(material), AppendIdPolicy::GenerateOnEmpty).id;
+
     // Rebuild the meshes as a single mesh.
     Mesh meshTarget;
+    string nodeWithCameraId = "";
     for (const auto& node : documentSource.nodes.Elements())
     {
         // Note that this means a mesh can be called more than once, if it is instanced by more than one node.
@@ -108,12 +111,33 @@ int main()
             auto mesh = documentSource.meshes.Get(node.meshId);
             for (const auto& meshPrimitive : mesh.primitives)
             {
-                // Positions
-                string accessorIdPositons;
-                if (meshPrimitive.TryGetAttributeAccessorId(ACCESSOR_POSITION, accessorIdPositons))
+                // Normal
+                string accessorIdNormal = "";
+                if (meshPrimitive.TryGetAttributeAccessorId(ACCESSOR_NORMAL, accessorIdNormal))
+                {
+                    // Load normals
+                    const Accessor& accessorNormal = documentSource.accessors.Get(accessorIdNormal);
+                    const auto dataNormal = gltfResourceReader->ReadBinaryData<float>(documentSource, accessorNormal);
+
+                    // Save positions to buffer, bufferview, and accessor.
+                    bufferBuilder.AddBufferView(BufferViewTarget::ARRAY_BUFFER);
+                    vector<float> minValues(3U, numeric_limits<float>::max());
+                    vector<float> maxValues(3U, numeric_limits<float>::lowest());
+                    const size_t countNormal = dataNormal.size();
+                    for (size_t i = 0U, j = 0U; i < countNormal; ++i, j = (i % 3U))
+                    {
+                        minValues[j] = min(dataNormal[i], minValues[j]);
+                        maxValues[j] = max(dataNormal[i], maxValues[j]);
+                    }
+                    accessorIdNormal = bufferBuilder.AddAccessor(dataNormal, { accessorNormal.type, accessorNormal.componentType, false, move(minValues), move(maxValues) }).id;
+                }
+
+                // Position
+                string accessorIdPositon = "";
+                if (meshPrimitive.TryGetAttributeAccessorId(ACCESSOR_POSITION, accessorIdPositon))
                 {
                     // Load positions
-                    const Accessor& accessorPosition = documentSource.accessors.Get(accessorIdPositons);
+                    const Accessor& accessorPosition = documentSource.accessors.Get(accessorIdPositon);
                     const auto dataPosition = gltfResourceReader->ReadBinaryData<float>(documentSource, accessorPosition);
                     vector<float> dataNewPosition;
                     // Transform positions
@@ -132,22 +156,22 @@ int main()
                         auto matrix = find_if(modifiedMatrices.begin(), modifiedMatrices.end(), [nodeId](const pair<string, Matrix4f>& obj) { return obj.first == nodeId; })->second;
                         vec = vec.transpose() * matrix;
 
-                        dataNewPosition.push_back(vec.x());
-                        dataNewPosition.push_back(vec.y());
-                        dataNewPosition.push_back(vec.z());
+                        dataNewPosition.push_back(move(vec.x()));
+                        dataNewPosition.push_back(move(vec.y()));
+                        dataNewPosition.push_back(move(vec.z()));
                     }
 
                     // Save positions to buffer, bufferview, and accessor.
                     bufferBuilder.AddBufferView(BufferViewTarget::ARRAY_BUFFER);
                     vector<float> minValues(3U, numeric_limits<float>::max());
                     vector<float> maxValues(3U, numeric_limits<float>::lowest());
-                    const size_t positionCount = dataNewPosition.size();
-                    for (size_t i = 0U, j = 0U; i < positionCount; ++i, j = (i % 3U))
+                    const size_t countPosition = dataNewPosition.size();
+                    for (size_t i = 0U, j = 0U; i < countPosition; ++i, j = (i % 3U))
                     {
                         minValues[j] = min(dataNewPosition[i], minValues[j]);
                         maxValues[j] = max(dataNewPosition[i], maxValues[j]);
                     }
-                    accessorIdPositons = bufferBuilder.AddAccessor(dataNewPosition, { accessorPosition.type, accessorPosition.componentType, false, move(minValues), move(maxValues) }).id;
+                    accessorIdPositon = bufferBuilder.AddAccessor(dataNewPosition, { accessorPosition.type, accessorPosition.componentType, false, move(minValues), move(maxValues) }).id;
                 }
 
                 // Indices
@@ -156,12 +180,40 @@ int main()
                 bufferBuilder.AddBufferView(BufferViewTarget::ELEMENT_ARRAY_BUFFER);
                 string accessorIdIndices = bufferBuilder.AddAccessor(dataIndices, { accessorIndices.type, accessorIndices.componentType }).id;
 
-                // Mesh Primitive
-                MeshPrimitive meshPrimitive;
-                meshPrimitive.indicesAccessorId = accessorIdIndices;
-                meshPrimitive.attributes[ACCESSOR_POSITION] = accessorIdPositons;
-                meshTarget.primitives.push_back(move(meshPrimitive));
+                // Mesh Primitive (assemble attributes)
+                MeshPrimitive meshPrimitiveTarget;
+                meshPrimitiveTarget.indicesAccessorId = move(accessorIdIndices);
+                meshPrimitiveTarget.attributes[ACCESSOR_NORMAL] = move(accessorIdNormal);
+                meshPrimitiveTarget.attributes[ACCESSOR_POSITION] = move(accessorIdPositon);
+                meshPrimitiveTarget.materialId = materialId;
+                meshPrimitiveTarget.mode = move(meshPrimitive.mode);
+                meshTarget.primitives.push_back(move(meshPrimitiveTarget));
             }
+        }
+        else if (node.cameraId != "")
+        {
+            // If a camera is attached to a node, it needs to be preserved. 
+            // This code won't be called if a mesh is attached to the same node. Multiple cameras would cause issues.
+            // Preserves the camera.
+            documentTarget.cameras.Append(move(documentSource.cameras.Get(node.cameraId)));
+
+            // Preserves the node containing the camera and its transform. 
+            auto &nodeId = node.id;
+            auto matrix = find_if(modifiedMatrices.begin(), modifiedMatrices.end(), [nodeId](const pair<string, Matrix4f>& obj) { return obj.first == nodeId; })->second;
+            Matrix4 matrixTarget;
+            int index = 0;
+            for (auto it = matrixTarget.values.begin(); it != matrixTarget.values.end(); it++)
+            {
+                int row = index / 4;
+                int col = index % 4;
+                *it = matrix((row), (col));
+                index++;
+            }
+
+            Node nodeTarget;
+            nodeTarget.cameraId = node.cameraId;
+            nodeTarget.matrix = move(matrixTarget);
+            nodeWithCameraId = documentTarget.nodes.Append(move(nodeTarget), AppendIdPolicy::GenerateOnEmpty).id;
         }
     }
 
@@ -179,6 +231,10 @@ int main()
     // Scene
     Scene scene;
     scene.nodes.push_back(nodeId);
+    if (nodeWithCameraId != "")
+    {
+        scene.nodes.push_back(nodeWithCameraId);
+    }
     documentTarget.SetDefaultScene(move(scene), AppendIdPolicy::GenerateOnEmpty);
 
     cout << "glTF rebuilt!\n";
@@ -203,11 +259,10 @@ int main()
     cout << "glTF written to new file!\n";
 
     //TODO:
-    // Apply a material.
-    // Save the node with the camera, and its transform.
-    // Save the camera.
+    //DONE Apply a material. pbrMetallicRoughness? baseColorFactor? emissiveFactor?
+    //DONE Save the camera, its node, and its transform.
+    //DONE Save more aspects of the primitives: Normal, mode
+    //DONE Use a relative path.
+    //DONE Removed unneeded #include statements
     // Improve performance.
-    // Garbage collection?
-    // Use a relative path.
-    // Removed unneeded #include statements
 }
