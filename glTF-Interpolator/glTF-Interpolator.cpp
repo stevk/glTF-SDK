@@ -17,7 +17,8 @@ int main()
 {
     auto sourcePath = experimental::filesystem::current_path() / "Data";
 
-    string filename = "buggy.gltf";//"Node_Attribute_08.gltf";
+    string filename = "buggy.gltf";
+    //string filename = "Node_Attribute_08.gltf";
     string TargetFilename = "MergedMesh.gltf";
 
     // Load the glTF model
@@ -54,8 +55,8 @@ int main()
     bufferBuilder.AddBuffer(bufferId);
 
     // Build a mutable structure to track an manipulate the node transforms.
-    // The string is the node ID, while the matrix is the transformation matrix.
-    vector<pair<string, Matrix4f>> modifiedMatrices;
+    // The index is the node ID, while the matrix is the transformation matrix.
+    vector<Matrix4f> modifiedMatrices;
     for (const auto& nodeMain : documentSource.nodes.Elements())
     {
         Matrix4f matrix;
@@ -68,7 +69,7 @@ int main()
             index++;
         }
 
-        modifiedMatrices.push_back(make_pair(nodeMain.id, matrix));
+        modifiedMatrices.push_back(matrix);
     }
     cout << "Transforms loaded!\n";
 
@@ -78,16 +79,7 @@ int main()
     {
         for (auto it = node.children.begin(); it != node.children.end(); it++)
         {
-            auto searchValue = *it;
-            auto childMatrix = find_if(modifiedMatrices.begin(), modifiedMatrices.end(), [&searchValue](const pair<string, Matrix4f>& obj) { return obj.first == searchValue; });
-            if (childMatrix->second.any())
-            {
-                childMatrix->second = childMatrix->second * modifiedMatrices[index].second;
-            }
-            else
-            {
-                childMatrix->second = modifiedMatrices[index].second;
-            }
+            modifiedMatrices[stoi(*it)] = modifiedMatrices[stoi(*it)] * modifiedMatrices[index];
         }
         index++;
     }
@@ -151,9 +143,7 @@ int main()
                         auto z = *it;
                         Vector4f vec(x, y, z, 1);
 
-                        // Bakes the node's transforms into the positions.
-                        auto &nodeId = node.id;
-                        auto matrix = find_if(modifiedMatrices.begin(), modifiedMatrices.end(), [nodeId](const pair<string, Matrix4f>& obj) { return obj.first == nodeId; })->second;
+                        auto matrix = modifiedMatrices[stoi(node.id)];
                         vec = vec.transpose() * matrix;
 
                         dataNewPosition.push_back(move(vec.x()));
@@ -197,9 +187,7 @@ int main()
             // Preserves the camera.
             documentTarget.cameras.Append(move(documentSource.cameras.Get(node.cameraId)));
 
-            // Preserves the node containing the camera and its transform. 
-            auto &nodeId = node.id;
-            auto matrix = find_if(modifiedMatrices.begin(), modifiedMatrices.end(), [nodeId](const pair<string, Matrix4f>& obj) { return obj.first == nodeId; })->second;
+            auto matrix = modifiedMatrices[stoi(node.id)];
             Matrix4 matrixTarget;
             int index = 0;
             for (auto it = matrixTarget.values.begin(); it != matrixTarget.values.end(); it++)
@@ -257,12 +245,4 @@ int main()
     gltfResourceWriter.WriteExternal(TargetFilename, manifestTarget);
 
     cout << "glTF written to new file!\n";
-
-    //TODO:
-    //DONE Apply a material. pbrMetallicRoughness? baseColorFactor? emissiveFactor?
-    //DONE Save the camera, its node, and its transform.
-    //DONE Save more aspects of the primitives: Normal, mode
-    //DONE Use a relative path.
-    //DONE Removed unneeded #include statements
-    // Improve performance.
 }
